@@ -93,6 +93,10 @@ def find_steamcmd(env=None, os_name=None, home=None, which=shutil.which):
         # An explicit path that is wrong is an error, not a reason to guess elsewhere.
         return SteamCmdLocation(None, "STEAMCMD_PATH", [str(path)], "STEAMCMD_PATH points to a missing file: %s" % path)
 
+    if env.get("WORKSHOP_STEAMCMD_NO_AUTODETECT", "").strip().lower() in ("1", "true", "yes"):
+        # Only an explicit STEAMCMD_PATH is accepted (strict servers, and test isolation).
+        return SteamCmdLocation(None, None, ["(auto-detection disabled by WORKSHOP_STEAMCMD_NO_AUTODETECT)"])
+
     for name in ("steamcmd",) + (("steamcmd.sh",) if os_name != "windows" else ()):
         tried.append("PATH:" + name)
         resolved = which(name)

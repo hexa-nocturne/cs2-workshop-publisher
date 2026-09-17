@@ -239,9 +239,10 @@ class PackListTests(unittest.TestCase):
         a, b = base / "a.bin", base / "b.bin"
         a.write_bytes(b"a")
         b.write_bytes(b"b")
-        old = vpk.write(base / "live.vpk", {"x/one.vjs_c": a, "x/two.vjs_c": a})
-        new = vpk.write(base / "new.vpk", {"x/one.vjs_c": b, "x/three.vjs_c": a})
-        result = run_cli(["--json", "pack-list", new, "--compare", old])
+        old, new = base / "live_dir.vpk", base / "new.vpk"
+        vpk.write(old, {"x/one.vjs_c": a, "x/two.vjs_c": a}, chunk_size=1)
+        vpk.write(new, {"x/one.vjs_c": b, "x/three.vjs_c": a})
+        result = run_cli(["--json", "pack-list", new, "--compare", old, "--verify"])
         self.assertEqual(result.returncode, 0, result.err)
         diff = json.loads(result.out)["compare"]["diff"]
         self.assertEqual((diff["added"], diff["removed"], diff["changed"]), (["x/three.vjs_c"], ["x/two.vjs_c"], ["x/one.vjs_c"]))

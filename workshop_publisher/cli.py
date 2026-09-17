@@ -544,7 +544,10 @@ def cmd_pack_list(ctx):
         target = paths.vpk
     try:
         data = manifest.from_vpk(target)
-        vpk.verify(target)
+        if ctx.args.verify:
+            ctx.console.info("Verifying checksums of %d files..." % data["fileCount"])
+            vpk.verify(target)
+            data["verified"] = True
     except (OSError, vpk.VpkError) as exc:
         raise CommandError("cannot read %s: %s" % (target, exc))
     ctx.result["pack"] = data
@@ -565,7 +568,20 @@ def cmd_pack_list(ctx):
         return EXIT_OK
     for path, info in data["files"].items():
         console.line("%10d  %s" % (info["size"], path))
-    console.line("%d files, %s VPK" % (data["fileCount"], manifest.format_size(data["vpkSize"])))
+    console.line("%d files, %s VPK%s" % (data["fileCount"], manifest.format_size(data["vpkSize"]),
+                                          " in %d chunks" % data["chunks"] if data["chunks"] else ""))
+    return EXIT_OK
+
+
+def cmd_pack_extract(ctx):
+    from . import vpk
+
+    try:
+        count = vpk.extract(ctx.args.vpk, ctx.args.destination, overwrite=ctx.args.overwrite)
+    except (OSError, vpk.VpkError) as exc:
+        raise CommandError("cannot extract %s: %s" % (ctx.args.vpk, exc))
+    ctx.result["extracted"] = {"files": count, "destination": str(ctx.args.destination)}
+    ctx.console.ok("Extracted %d files to %s" % (count, ctx.args.destination))
     return EXIT_OK
 
 
@@ -632,6 +648,13 @@ def build_parser():
     p.add_argument("vpk", nargs="?", help="VPK to inspect (default: the configured addon VPK)")
     p.add_argument("--compare", metavar="OTHER_VPK",
                    help="show files added/removed/changed relative to another VPK (e.g. the live Workshop download)")
+    p.add_argument("--verify", action="store_true", help="also read every file and check CRCs and MD5 sections")
+
+    p = sub.add_parser("pack-extract", parents=[common],
+                       help="extract a VPK (single or multi-part *_dir.vpk), e.g. into a prebuilt folder")
+    p.add_argument("vpk", help="VPK to extract")
+    p.add_argument("destination", help="directory to extract into")
+    p.add_argument("--overwrite", action="store_true", help="replace files that already exist")
     return parser
 
 
@@ -645,6 +668,7 @@ COMMANDS = {
     "status": cmd_status,
     "tools": cmd_tools,
     "pack-list": cmd_pack_list,
+    "pack-extract": cmd_pack_extract,
 }
 
 

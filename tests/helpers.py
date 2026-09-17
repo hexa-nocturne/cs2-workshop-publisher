@@ -43,6 +43,8 @@ def clean_env(**extra):
     env = {k: v for k, v in os.environ.items() if not k.startswith(("STEAM", "WORKSHOP", "FAKE_", "CS2_"))}
     env["FAKE_STEAMCMD_PYTHON"] = sys.executable
     env["NO_COLOR"] = "1"
+    # Hide any SteamCMD installed on the machine running the tests (e.g. /opt/steamcmd).
+    env["WORKSHOP_STEAMCMD_NO_AUTODETECT"] = "1"
     # An empty HOME so a real SteamCMD installation is never auto-detected.
     empty_home = tempfile.mkdtemp(prefix="workshop-home-")
     env["HOME"] = empty_home

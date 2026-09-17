@@ -19,7 +19,9 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from . import manifest as manifest_mod
@@ -51,6 +53,7 @@ class Cs2Settings:
     KNOWN = {
         "addon", "source", "tools", "vpk", "runtime", "wine", "compile", "rootExtensions", "extraRoots",
         "packExclude", "referenceCheck", "resources", "cacheDirectory", "timeoutSeconds",
+        "prebuilt", "vpkChunkMB", "jobs", "compileMode", "compileBatch", "batchSize",
     }
 
     def __init__(self, spec, where="cs2"):
@@ -102,6 +105,21 @@ class Cs2Settings:
         self.cpu_quota = res.get("cpuQuota")
         self.cache_directory = spec.get("cacheDirectory", "./build-cache")
         self.timeout = int(spec.get("timeoutSeconds", 1800))
+        # Already-compiled files packed as-is (e.g. third-party models with no sources).
+        self.prebuilt = _opt_list(spec, "prebuilt", [], where)
+        self.vpk_chunk_mb = int(spec.get("vpkChunkMB", 100))
+        if self.vpk_chunk_mb < 1:
+            raise ValueError("%s: 'vpkChunkMB' must be at least 1" % where)
+        self.jobs = int(spec.get("jobs", 1))
+        if not 1 <= self.jobs <= 64:
+            raise ValueError("%s: 'jobs' must be between 1 and 64" % where)
+        self.compile_mode = spec.get("compileMode", "per-file")
+        if self.compile_mode not in ("per-file", "batch"):
+            raise ValueError("%s: 'compileMode' must be per-file or batch" % where)
+        self.compile_batch = _opt_list(spec, "compileBatch", [], where)
+        if self.compile_mode == "batch" and "{filelist}" not in " ".join(self.compile_batch):
+            raise ValueError("%s: batch mode needs a 'compileBatch' command containing {filelist}" % where)
+        self.batch_size = int(spec.get("batchSize", 200))
 
 
 class Cs2Paths:
@@ -120,6 +138,7 @@ class Cs2Paths:
         self.logs = self.cache / "logs"
         self.wine_prefix = Path(os.path.expanduser(settings.wine_prefix))
         self.base_vpks = [Path(p.replace("{tools}", str(self.tools))) for p in settings.base_vpks]
+        self.prebuilt = [_resolve(p, cfg, env) for p in settings.prebuilt]
 
 
 # ---------------------------------------------------------------------------
@@ -233,7 +252,7 @@ def base_game_files(paths, console=None):
 
 def check_references(settings, paths, files, console=None):
     refs = references.scan_sources(read_texts(files), settings.reference_aliases)
-    base = base_game_files(paths, console)
+    base = base_game_files(paths, console) | set(collect_prebuilt(paths))
     missing = references.find_missing(refs, files.keys(), base, settings.reference_ignore)
     return refs, missing, bool(base)
 
@@ -283,7 +302,7 @@ def wine_environment(settings, paths, env):
     return wenv
 
 
-def compiler_argv(settings, paths, env, template_values, which=shutil.which):
+def compiler_argv(settings, paths, env, template_values, which=shutil.which, template=None):
     wine = use_wine(settings)
     convert = to_wine_path if wine else str
     values = {
@@ -294,7 +313,7 @@ def compiler_argv(settings, paths, env, template_values, which=shutil.which):
     }
     values.update({k: convert(v) for k, v in template_values.items()})
     argv = []
-    for part in settings.compile:
+    for part in (template or settings.compile):
         for key, value in values.items():
             part = part.replace(key, value)
         argv.append(part)
@@ -374,9 +393,8 @@ def _ensure_under(path, parent):
         raise Cs2Error("refusing to modify %s: not inside %s" % (path, parent))
 
 
-def _run_compiler(settings, paths, env, rel, console, log):
-    input_path = paths.addon_content / rel
-    argv = compiler_argv(settings, paths, env, {"{input}": input_path})
+def _run_compiler(settings, paths, env, label, console, log, template_values, template=None, lock=None):
+    argv = compiler_argv(settings, paths, env, template_values, template=template)
     run_env = wine_environment(settings, paths, env) if use_wine(settings) else env
     console.debug("compile: %s" % subprocess.list2cmdline(argv))
     try:
@@ -384,16 +402,73 @@ def _run_compiler(settings, paths, env, rel, console, log):
             argv, env=run_env, cwd=str(paths.compiler.parent), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             timeout=settings.timeout,
         )
+        code = completed.returncode
+        output = completed.stdout.decode("utf-8", "replace")
     except subprocess.TimeoutExpired:
-        raise Cs2Error("compiling %s timed out after %d seconds" % (rel, settings.timeout))
+        code, output = -1, "timed out after %d seconds" % settings.timeout
     except OSError as exc:
         raise Cs2Error("could not start the compiler: %s" % exc)
-    output = completed.stdout.decode("utf-8", "replace")
-    log.write("=== %s (exit %d)\n%s\n" % (rel, completed.returncode, output))
-    errors = [line.strip() for line in output.splitlines() if re.search(r"\berror\b", line, re.I) and not re.search(r"\b0 errors?\b", line, re.I)]
-    if console.verbose:
-        console.write(output if output.endswith("\n") else output + "\n")
-    return completed.returncode, errors
+    errors = [line.strip() for line in output.splitlines()
+              if re.search(r"\berror\b", line, re.I) and not re.search(r"\b0 errors?\b", line, re.I)]
+    with lock or threading.Lock():
+        log.write("=== %s (exit %d)\n%s\n" % (label, code, output))
+        log.flush()
+        if console.verbose:
+            console.write(output if output.endswith("\n") else output + "\n")
+    return code, errors
+
+
+def _compile_all(settings, paths, env, roots, console, log):
+    """Compile ``roots`` honouring ``jobs`` and batch mode. Returns a list of failures."""
+    lock = threading.Lock()
+    counter = {"done": 0}
+    failures = []
+
+    def check(rel, code, errors):
+        outputs = expected_outputs(rel)
+        produced = any((paths.addon_game / out).is_file() for out in outputs)
+        if code != 0 or not produced:
+            detail = "exit code %d" % code if code != 0 else "no %s was produced" % " / ".join(outputs)
+            with lock:
+                failures.append({"file": rel, "detail": detail, "errors": errors[:5]})
+
+    if settings.compile_mode == "batch":
+        convert = to_wine_path if use_wine(settings) else str
+        batches = [roots[i:i + settings.batch_size] for i in range(0, len(roots), settings.batch_size)]
+
+        def work(numbered):
+            number, batch = numbered
+            listing = paths.cache / "cs2" / ("filelist-%03d.txt" % number)
+            listing.parent.mkdir(parents=True, exist_ok=True)
+            listing.write_text("\n".join(convert(paths.addon_content / rel) for rel in batch) + "\n", encoding="utf-8")
+            code, errors = _run_compiler(settings, paths, env, "batch %d (%d files)" % (number, len(batch)), console,
+                                         log, {"{filelist}": listing}, template=settings.compile_batch, lock=lock)
+            with lock:
+                counter["done"] += len(batch)
+                console.info("  [%d/%d] batch %d" % (counter["done"], len(roots), number))
+            for rel in batch:
+                check(rel, code, errors)
+
+        items = list(enumerate(batches, 1))
+    else:
+        def work(rel):
+            code, errors = _run_compiler(settings, paths, env, rel, console, log,
+                                         {"{input}": paths.addon_content / rel}, lock=lock)
+            with lock:
+                counter["done"] += 1
+                console.info("  [%d/%d] %s" % (counter["done"], len(roots), rel))
+            check(rel, code, errors)
+
+        items = roots
+
+    if settings.jobs == 1:
+        for item in items:
+            work(item)
+    else:
+        with ThreadPoolExecutor(max_workers=settings.jobs) as pool:
+            for future in [pool.submit(work, item) for item in items]:
+                future.result()
+    return sorted(failures, key=lambda f: f["file"])
 
 
 def expected_outputs(rel):
@@ -406,10 +481,16 @@ def build(settings, cfg, console, env=None, clean=False):
     started = time.time()
     result = {"addon": settings.addon, "vpk": str(paths.vpk)}
 
-    if not paths.source.is_dir():
+    for folder in paths.prebuilt:
+        if not folder.is_dir():
+            raise Cs2Error("prebuilt directory does not exist: %s" % folder)
+    if paths.source.is_dir():
+        files = scan_source(paths.source)
+    elif paths.prebuilt:
+        files = {}
+    else:
         raise Cs2Error("addon source directory does not exist: %s" % paths.source)
-    files = scan_source(paths.source)
-    if not files:
+    if not files and not paths.prebuilt:
         raise Cs2Error("addon source directory is empty: %s" % paths.source)
 
     console.info("Checking asset references...")
@@ -427,16 +508,16 @@ def build(settings, cfg, console, env=None, clean=False):
             raise Cs2Error(message + " (set build step referenceCheck.mode to 'warn' or add 'ignore' patterns if intended)")
         console.warn(message)
 
-    problems = check_runtime(settings, paths, env)
-    if problems:
-        raise Cs2Error("the CS2 compiler is not ready:\n  - " + "\n  - ".join(problems))
-
     digests = {rel: file_digest(path) for rel, path in files.items()}
     fingerprint = tool_fingerprint(paths, settings)
     full, reason, changed, deleted = plan_changes(digests, load_state(paths.state), fingerprint, clean)
     roots = select_roots(settings, files, changed, refs, full)
     result.update({"fullRebuild": full, "reason": reason, "changedSources": len(changed), "compiled": roots})
     console.info("%s build: %s; %d resource(s) to compile" % ("Full" if full else "Incremental", reason, len(roots)))
+    if roots:
+        problems = check_runtime(settings, paths, env)
+        if problems:
+            raise Cs2Error("the CS2 compiler is not ready:\n  - " + "\n  - ".join(problems))
 
     _mirror(files, digests, changed, deleted, paths, full, console)
     if full and paths.addon_game.exists():
@@ -455,14 +536,7 @@ def build(settings, cfg, console, env=None, clean=False):
                 env=wine_environment(settings, paths, env),
             )
         with open(str(log_path), "w", encoding="utf-8") as log:
-            for index, rel in enumerate(roots, 1):
-                console.info("  [%d/%d] %s" % (index, len(roots), rel))
-                code, errors = _run_compiler(settings, paths, env, rel, console, log)
-                outputs = expected_outputs(rel)
-                produced = any((paths.addon_game / out).is_file() for out in outputs)
-                if code != 0 or not produced:
-                    detail = "exit code %d" % code if code != 0 else "no %s was produced" % " / ".join(outputs)
-                    failures.append({"file": rel, "detail": detail, "errors": errors[:5]})
+            failures = _compile_all(settings, paths, env, roots, console, log)
         if failures:
             # Don't record state: the next run must retry these files.
             for failure in failures:
@@ -474,12 +548,23 @@ def build(settings, cfg, console, env=None, clean=False):
 
     save_state(paths.state, {"version": STATE_VERSION, "fingerprint": fingerprint, "files": digests})
 
-    pack_files = collect_pack_files(settings, paths)
+    compiled_files = collect_pack_files(settings, paths)
+    prebuilt_files = collect_prebuilt(paths)
+    overridden = sorted(set(compiled_files) & set(prebuilt_files))
+    pack_files = dict(prebuilt_files)
+    pack_files.update(compiled_files)
     if not pack_files:
-        raise Cs2Error("no compiled files found in %s to pack" % paths.addon_game)
-    console.info("Packing %d file(s) into %s" % (len(pack_files), paths.vpk))
-    vpk.write(paths.vpk, pack_files)
+        raise Cs2Error("nothing to pack: no compiled files in %s and no prebuilt files" % paths.addon_game)
+    if overridden:
+        console.warn("%d prebuilt file(s) replaced by freshly compiled versions" % len(overridden))
+        for rel in overridden[:20]:
+            console.debug("compiled replaces prebuilt: %s" % rel)
+    console.info("Packing %d file(s) (%d compiled, %d prebuilt) into %s" % (
+        len(pack_files), len(compiled_files), len(pack_files) - len(compiled_files), paths.vpk))
+    written = vpk.write(paths.vpk, pack_files, chunk_size=settings.vpk_chunk_mb * 1024 * 1024)
     vpk.verify(paths.vpk)
+    result.update({"compiledFiles": len(compiled_files), "prebuiltFiles": len(pack_files) - len(compiled_files),
+                   "overriddenPrebuilt": overridden, "vpkFiles": written["files"], "vpkChunks": written["chunks"]})
 
     previous = manifest_mod.load(paths.manifests / "latest.json")
     current = manifest_mod.from_vpk(paths.vpk)
@@ -516,4 +601,14 @@ def collect_pack_files(settings, paths):
             if any(fnmatch.fnmatch(name, pat) or fnmatch.fnmatch(rel, pat) for pat in settings.pack_exclude):
                 continue
             pack[rel.lower()] = full
+    return pack
+
+
+def collect_prebuilt(paths):
+    """Files from the prebuilt folders keyed by lowercase pack path (later folders win)."""
+    pack = {}
+    for folder in paths.prebuilt:
+        if folder.is_dir():
+            for rel, full in scan_source(folder).items():
+                pack[rel.lower()] = full
     return pack

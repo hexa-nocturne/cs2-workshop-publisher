@@ -16,6 +16,7 @@ class VpkTests(unittest.TestCase):
             "panorama/images/ranks/rank_1_png.vtex_c": os.urandom(5000),
             "sounds/ui/levelup.vsnd_c": os.urandom(1234),
             "models/weapons/knife.vmdl_c": b"",
+            "materials/big.vtex_c": os.urandom(3 * 1024 * 1024 + 17),
             "readme": b"no extension",
         }
         self.mapping = {}
@@ -25,22 +26,68 @@ class VpkTests(unittest.TestCase):
             local.write_bytes(data)
             self.mapping[rel] = local
 
-    def test_round_trip(self):
-        out = vpk.write(self.dir / "out dir" / "addon.vpk", self.mapping)
-        self.assertEqual(vpk.verify(out), len(self.files))
-        version, _, _, entries = vpk.read_directory(out)
-        self.assertEqual(version, 2)
-        self.assertEqual(set(entries), set(self.files))
+    def check_contents(self, dir_file):
+        self.assertEqual(vpk.verify(dir_file), len(self.files))
+        directory = vpk.read_directory(dir_file)
+        self.assertEqual(directory.version, 2)
+        self.assertEqual(set(directory.entries), set(self.files))
         for rel, data in self.files.items():
-            self.assertEqual(vpk.read_file(out, rel), data)
+            self.assertEqual(vpk.read_file(dir_file, rel), data)
+
+    def test_single_file_round_trip(self):
+        out = self.dir / "out dir" / "addon.vpk"
+        info = vpk.write(out, self.mapping)
+        self.assertEqual(info["chunks"], 0)
+        self.check_contents(out)
+
+    def test_multipart_round_trip_and_stale_chunk_cleanup(self):
+        out = self.dir / "pak01_dir.vpk"
+        info = vpk.write(out, self.mapping, chunk_size=1024 * 1024)
+        self.assertEqual(info["chunks"], 2)  # the 3 MB file gets its own chunk
+        self.assertTrue((self.dir / "pak01_000.vpk").is_file())
+        self.assertTrue((self.dir / "pak01_001.vpk").is_file())
+        self.check_contents(out)
+        entries = vpk.read_directory(out).entries
+        self.assertNotEqual(entries["readme"].archive_index, vpk.EMBEDDED_ARCHIVE)
+        # A later build with fewer chunks removes the stale ones.
+        (self.dir / "pak01_005.vpk").write_bytes(b"stale")
+        info = vpk.write(out, {"readme": self.mapping["readme"]}, chunk_size=1024 * 1024)
+        self.assertEqual(info["chunks"], 1)
+        self.assertFalse((self.dir / "pak01_001.vpk").exists())
+        self.assertFalse((self.dir / "pak01_005.vpk").exists())
+        self.assertEqual(vpk.verify(out), 1)
+        self.assertEqual(sorted(p.name for p in self.dir.iterdir() if p.suffix == ".vpk"), ["pak01_000.vpk", "pak01_dir.vpk"])
+
+    def test_extract_multipart(self):
+        out = self.dir / "pak01_dir.vpk"
+        vpk.write(out, self.mapping, chunk_size=1024 * 1024)
+        dest = self.dir / "extracted here"
+        self.assertEqual(vpk.extract(out, dest), len(self.files))
+        for rel, data in self.files.items():
+            self.assertEqual((dest / rel).read_bytes(), data)
+        with self.assertRaises(vpk.VpkError):
+            vpk.extract(out, dest)  # refuses to overwrite by default
+        vpk.extract(out, dest, overwrite=True)
+
+    def test_missing_chunk_reported(self):
+        out = self.dir / "pak01_dir.vpk"
+        vpk.write(out, self.mapping, chunk_size=1024 * 1024)
+        (self.dir / "pak01_001.vpk").unlink()
+        self.assertEqual(len(vpk.list_files(out)), len(self.files))  # listing needs only the directory
+        with self.assertRaises(vpk.VpkError) as ctx:
+            vpk.verify(out)
+        self.assertIn("missing", str(ctx.exception))
 
     def test_corruption_detected(self):
-        out = vpk.write(self.dir / "addon.vpk", self.mapping)
-        blob = bytearray(out.read_bytes())
-        blob[-60] ^= 0xFF  # inside the file data
-        out.write_bytes(bytes(blob))
-        with self.assertRaises(vpk.VpkError):
-            vpk.verify(out)
+        for name, chunk in (("addon.vpk", None), ("pak01_dir.vpk", 1024 * 1024)):
+            out = self.dir / name
+            vpk.write(out, self.mapping, chunk_size=chunk)
+            target = out if chunk is None else self.dir / "pak01_000.vpk"
+            blob = bytearray(target.read_bytes())
+            blob[len(blob) // 2] ^= 0xFF
+            target.write_bytes(bytes(blob))
+            with self.assertRaises(vpk.VpkError):
+                vpk.verify(out)
 
     def test_rejects_bad_files(self):
         bad = self.dir / "bad.vpk"
@@ -49,9 +96,11 @@ class VpkTests(unittest.TestCase):
             vpk.list_files(bad)
         with self.assertRaises(vpk.VpkError):
             vpk.write(self.dir / "x.vpk", {"../escape.txt": self.mapping["readme"]})
+        self.assertFalse(list(self.dir.glob("*.tmp")))
 
     def test_manifest_diff(self):
-        out = vpk.write(self.dir / "addon.vpk", self.mapping)
+        out = self.dir / "addon.vpk"
+        vpk.write(out, self.mapping)
         first = manifest.from_vpk(out)
         mapping = dict(self.mapping)
         del mapping["readme"]
@@ -60,12 +109,13 @@ class VpkTests(unittest.TestCase):
         new_file = self.dir / "src" / "new.vjs_c"
         new_file.write_bytes(b"js")
         mapping["panorama/scripts/new.vjs_c"] = new_file
-        second = manifest.from_vpk(vpk.write(self.dir / "addon.vpk", mapping))
+        vpk.write(out, mapping)
+        second = manifest.from_vpk(out)
         diff = manifest.diff(first, second)
         self.assertEqual(diff["added"], ["panorama/scripts/new.vjs_c"])
         self.assertEqual(diff["removed"], ["readme"])
         self.assertEqual(diff["changed"], ["sounds/ui/levelup.vsnd_c"])
-        self.assertEqual(manifest.diff(None, second)["added"].__len__(), second["fileCount"])
+        self.assertEqual(len(manifest.diff(None, second)["added"]), second["fileCount"])
 
 
 class ReferenceTests(unittest.TestCase):

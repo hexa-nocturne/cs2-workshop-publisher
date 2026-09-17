@@ -53,6 +53,14 @@ class SteamCmdDiscoveryTests(unittest.TestCase):
         self.assertIsNone(loc.error)
         self.assertIn("/usr/games/steamcmd", " ".join(loc.tried).replace("\\", "/"))
 
+    def test_autodetect_can_be_disabled(self):
+        (self.home / "Steam").mkdir()
+        (self.home / "Steam" / "steamcmd.sh").write_text("")
+        env = {"WORKSHOP_STEAMCMD_NO_AUTODETECT": "1"}
+        self.assertFalse(platforms.find_steamcmd(env, "linux", self.home, which=lambda _: "/usr/games/steamcmd").found)
+        env["STEAMCMD_PATH"] = str(self.home / "Steam" / "steamcmd.sh")
+        self.assertTrue(platforms.find_steamcmd(env, "linux", self.home, which=no_which).found)
+
     def test_windows_candidates(self):
         names = [str(c).replace("\\", "/") for c in platforms.steamcmd_candidates("windows", {}, self.home)]
         self.assertIn("C:/steamcmd/steamcmd.exe", names)

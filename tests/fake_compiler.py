@@ -1,6 +1,7 @@
 """Stand-in for resourcecompiler.exe used by tests.
 
 Usage: fake_compiler.py <input> <addon_content_dir> <addon_game_dir>
+       fake_compiler.py --filelist <file> <addon_content_dir> <addon_game_dir>
 Writes the compiled file(s) the real compiler would produce and appends the
 input to $FAKE_COMPILER_LOG. $FAKE_COMPILER_FAIL names a relative path to fail.
 """
@@ -12,7 +13,15 @@ COMPILED = {".xml": ".vxml_c", ".css": ".vcss_c", ".js": ".vjs_c", ".wav": ".vsn
 
 
 def main():
-    source, content, game = sys.argv[1:4]
+    if sys.argv[1] == "--filelist":
+        listing, content, game = sys.argv[2:5]
+        with open(listing, encoding="utf-8") as handle:
+            sources = [line.strip() for line in handle if line.strip()]
+        return max(compile_one(source, content, game) for source in sources)
+    return compile_one(*sys.argv[1:4])
+
+
+def compile_one(source, content, game):
     rel = os.path.relpath(source, content).replace("\\", "/")
     if os.environ.get("FAKE_COMPILER_LOG"):
         with open(os.environ["FAKE_COMPILER_LOG"], "a", encoding="utf-8") as log:

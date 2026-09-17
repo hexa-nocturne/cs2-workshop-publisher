@@ -189,12 +189,22 @@ def check_build(cfg, report, env, strict_runtime=False):
         except (BuildError, ValueError) as exc:
             report.add("CS2 build", FAIL if strict_runtime else WARN, str(exc))
             continue
+        missing_prebuilt = [p for p in paths.prebuilt if not p.is_dir()]
+        for folder in missing_prebuilt:
+            report.add("Prebuilt", FAIL, "prebuilt directory does not exist: %s" % folder)
+        if paths.prebuilt and not missing_prebuilt:
+            report.add("Prebuilt", OK, "%d file(s) packed as-is" % len(cs2.collect_prebuilt(paths)))
         if not paths.source.is_dir():
-            report.add("CS2 sources", FAIL, "addon source directory does not exist: %s" % paths.source)
-            continue
-        files = cs2.scan_source(paths.source)
-        report.add("CS2 sources", OK if files else FAIL, "%s (%d files)" % (display_path(paths.source, cfg.root), len(files)))
-        problems = cs2.check_runtime(settings, paths, env)
+            if not paths.prebuilt:
+                report.add("CS2 sources", FAIL, "addon source directory does not exist: %s" % paths.source)
+                continue
+            files = {}
+            report.add("CS2 sources", INFO, "no source directory; only prebuilt files will be packed")
+        else:
+            files = cs2.scan_source(paths.source)
+            report.add("CS2 sources", OK if files or paths.prebuilt else FAIL,
+                       "%s (%d files)" % (display_path(paths.source, cfg.root), len(files)))
+        problems = cs2.check_runtime(settings, paths, env) if files else []
         if problems:
             for problem in problems:
                 report.add("CS2 compiler", FAIL if strict_runtime else WARN, problem)

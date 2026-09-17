@@ -125,6 +125,61 @@ class Cs2PipelineTests(unittest.TestCase):
             self.build()
         self.assertIn("workshop tools install", str(ctx.exception))
 
+    def step(self, **changes):
+        self.config["build"]["steps"][0]["cs2"].update(changes)
+        self.save_config()
+
+    def test_prebuilt_files_are_merged_and_compiled_files_win(self):
+        prebuilt = self.project / "prebuilt"
+        self.write(prebuilt / "models/agents/agent.vmdl_c", "THIRD-PARTY")
+        self.write(prebuilt / "panorama/styles/ranks.vcss_c", "OLD PREBUILT")
+        self.step(prebuilt=["./prebuilt"], vpk="{content}/pak01_dir.vpk", vpkChunkMB=1)
+        result, _ = self.build()
+        dir_file = self.project / "build" / "workshop" / "pak01_dir.vpk"
+        self.assertEqual(result["prebuiltFiles"], 1)
+        self.assertEqual(result["overriddenPrebuilt"], ["panorama/styles/ranks.vcss_c"])
+        self.assertEqual(vpk.read_file(dir_file, "models/agents/agent.vmdl_c"), b"THIRD-PARTY")
+        self.assertTrue(vpk.read_file(dir_file, "panorama/styles/ranks.vcss_c").startswith(b"compiled:"))
+        self.assertGreaterEqual(result["vpkChunks"], 1)
+
+    def test_prebuilt_only_pack_needs_no_compiler(self):
+        shutil.rmtree(str(self.tools / "game"))
+        shutil.rmtree(str(self.project / "content"))
+        self.write(self.project / "prebuilt/materials/a.vmat_c", "A")
+        self.step(prebuilt=["./prebuilt"], source="./content")
+        result, compiled = self.build()
+        self.assertEqual(compiled, [])
+        self.assertEqual(result["fileCount"], 1)
+
+    def test_prebuilt_satisfies_references(self):
+        self.write(self.project / "content/panorama/layout/ranks.xml", '<Image src="file://{images}/agents/icon.png" />')
+        with self.assertRaises(BuildError):
+            self.build()
+        self.write(self.project / "prebuilt/panorama/images/agents/icon_png.vtex_c", "ICON")
+        self.step(prebuilt=["./prebuilt"])
+        self.build()
+
+    def test_missing_prebuilt_directory(self):
+        self.step(prebuilt=["./does-not-exist"])
+        with self.assertRaises(BuildError) as ctx:
+            self.build()
+        self.assertIn("prebuilt directory does not exist", str(ctx.exception))
+
+    def test_parallel_jobs(self):
+        for i in range(12):
+            self.write(self.project / ("content/sounds/ui/s%02d.wav" % i), "RIFF%d" % i)
+        self.step(jobs=4)
+        result, _ = self.build()  # the fake compiler's shared log is not safe for concurrent appends
+        self.assertEqual(len(result["compiled"]), 15)
+        self.assertEqual(result["fileCount"], 15)
+
+    def test_batch_mode(self):
+        self.step(compileMode="batch", batchSize=2,
+                  compileBatch=[sys.executable, str(FAKE_COMPILER), "--filelist", "{filelist}", "{addon_content}", "{addon_game}"])
+        result, compiled = self.build()
+        self.assertEqual(sorted(compiled), ["panorama/layout/ranks.xml", "panorama/styles/ranks.css", "sounds/ui/levelup.wav"])
+        self.assertEqual(result["fileCount"], 3)
+
     def test_compile_setting_change_forces_full_build(self):
         self.build()
         self.config["build"]["steps"][0]["cs2"]["compile"].append("--extra")

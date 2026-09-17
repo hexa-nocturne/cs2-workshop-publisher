@@ -9,11 +9,13 @@ from . import vpk
 
 
 def from_vpk(path):
-    entries = vpk.list_files(path)
-    files = {e.path: {"size": e.size, "crc32": "%08x" % e.crc} for e in entries}
+    """Manifest from the directory tree only (no file data is read)."""
+    directory = vpk.read_directory(path)
+    files = {e.path: {"size": e.size, "crc32": "%08x" % e.crc} for e in directory.entries.values()}
     return {
         "vpk": str(path),
-        "vpkSize": os.path.getsize(str(path)),
+        "vpkSize": directory.total_size(),
+        "chunks": len(directory.chunk_files()),
         "fileCount": len(files),
         "contentSize": sum(f["size"] for f in files.values()),
         "createdAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),

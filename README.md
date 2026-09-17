@@ -137,7 +137,8 @@ STEAMCMD_PATH=/path/to/steamcmd.sh ./workshop update
 ```
 
 When `STEAMCMD_PATH` is set but wrong, the tool reports that instead of silently using
-another copy. Without `sudo` you can also install SteamCMD from Valve's own download:
+another copy. Set `WORKSHOP_STEAMCMD_NO_AUTODETECT=1` to use only `STEAMCMD_PATH` and never
+search elsewhere (the test suite sets this, so an installed SteamCMD doesn't affect it). Without `sudo` you can also install SteamCMD from Valve's own download:
 
 ```bash
 mkdir -p ~/steamcmd && cd ~/steamcmd
@@ -251,18 +252,53 @@ players currently download:
 
 ```bash
 ./workshop pack-list
-./workshop pack-list --compare /path/to/steamapps/workshop/content/730/<id>/<name>.vpk
+./workshop pack-list --compare /path/to/steamapps/workshop/content/730/<id>/<name>_dir.vpk
+./workshop pack-list /path/to/pack_dir.vpk --verify     # also check every CRC/MD5 (reads all data)
 ```
 
-**Match the live layout.** Before the first real update, compare against the item's current
-content, which your game server already downloads under
-`steamapps/workshop/content/730/<id>/`. Set `vpk` so the file name and in-pack paths match
-what is there today, then check with `pack-list --compare`.
+Listing and comparing read only the directory tree, so they are fast even for large packs.
+
+**Prebuilt files.** Packs often contain files you cannot compile on the server, such as
+third-party agents and models that have no sources. List folders of already-compiled files
+in `prebuilt`, and they are merged into the pack as-is, keeping their paths. When a compiled
+file has the same path as a prebuilt one, the compiled file wins. Every such replacement is
+listed in the build result (`overriddenPrebuilt`). Prebuilt files also satisfy the reference
+check.
+
+**Large and multi-part packs.** If `vpk` ends in `_dir.vpk` (e.g. `{content}/pak01_dir.vpk`),
+the pack is written the way Valve's tool does it: a directory file plus numbered data chunks
+(`pak01_000.vpk`, `pak01_001.vpk`, …) of about `vpkChunkMB` (default 100) each. Chunks left
+over from an earlier, larger build are deleted. Packing streams data in 1 MB blocks, so
+memory use stays small regardless of pack size.
+
+**Migrating an existing live pack.** To take over a pack that was built elsewhere without
+losing anything players currently download:
+
+```bash
+LIVE=/path/to/steamapps/workshop/content/730/<id>
+./workshop pack-list "$LIVE/<name>_dir.vpk"                       # layout, size, chunk count
+./workshop pack-extract "$LIVE/<name>_dir.vpk" ~/<content-repo-data>/prebuilt
+# set "prebuilt": ["~/<content-repo-data>/prebuilt"] and "vpk": "{content}/<name>_dir.vpk"
+./workshop build                                                 # no sources needed yet
+./workshop pack-list --compare "$LIVE/<name>_dir.vpk"            # expect: 0 added, 0 removed, 0 changed
+```
+
+A prebuilt-only build needs no Wine or compiler, so it proves the packing and layout on
+Linux before anything is recompiled. After that, add sources for the parts you maintain
+(HUD, rank icons, sounds). Their compiled output replaces the extracted copies, and the
+compare shows exactly which files changed.
 
 **Resource limits.** Compiler processes run under `nice -n 10` and `ionice -c 3` by default.
 If a systemd user manager is available, `resources.memoryMax` and `resources.cpuQuota` also
 place each compiler run in a transient scope with those limits, for example `"6G"` and
 `"200%"`. Only one build or upload runs per project at a time; a second one exits with code 8.
+
+**Compile speed.** Starting Wine has a fixed cost per process. `jobs` runs several compiler
+processes in parallel. Each process gets its own `memoryMax`/`cpuQuota` scope, so the total
+can reach `jobs` × `memoryMax`. `compileMode: "batch"` passes up to `batchSize` files per
+compiler call through a file list, using the `compileBatch` template (it must contain
+`{filelist}`). Batch mode is **untested with the real compiler**: check the list flag that
+`resourcecompiler.exe` accepts on a small test addon before relying on it.
 
 ## Configuration reference
 
@@ -308,7 +344,11 @@ error, not an empty string.
 | `packExclude` | `tools_*`, `*.vpk`, … | Compiled files left out of the VPK |
 | `referenceCheck` | `{"mode": "error"}` | `mode`, `ignore` globs, `panoramaAliases`, `baseVpks` |
 | `resources` | `nice 10`, `ioniceIdle true` | plus optional `memoryMax`, `cpuQuota` |
-| `timeoutSeconds` | `1800` | Per-file compile timeout |
+| `timeoutSeconds` | `1800` | Per-call compile timeout |
+| `prebuilt` | `[]` | Folders of already-compiled files packed as-is (compiled files win on conflicts) |
+| `vpkChunkMB` | `100` | Chunk size when `vpk` ends in `_dir.vpk` |
+| `jobs` | `1` | Parallel compiler processes |
+| `compileMode` / `compileBatch` / `batchSize` | `per-file` / – / `200` | Optional batch compilation through a file list |
 
 ## Commands, exit codes and JSON output
 
@@ -322,7 +362,8 @@ error, not an empty string.
 ./workshop login                     interactive, once: cache the SteamCMD session
 ./workshop status                    item details from the Steam Web API
 ./workshop tools install|setup-wine|check
-./workshop pack-list [VPK] [--compare OTHER.vpk]
+./workshop pack-list [VPK] [--compare OTHER.vpk] [--verify]
+./workshop pack-extract VPK DESTINATION [--overwrite]
 ```
 
 Global options: `--config PATH`, `--credentials-file PATH`, `--json`, `--verbose`, `--no-color`.
@@ -414,9 +455,13 @@ handling Steam Guard, so it is intentionally not provided. Publish from the buil
 - `tools install` assumes the resource compiler ships with CS2's Windows depots when the
   account owns the Workshop Tools DLC. If it does not, the command says so explicitly.
 - Map compiling is not supported.
-- The Python VPK writer produces a standard single-file VPK v2. Its output is verified by
-  reading it back with checksum validation, but the game loading it has not been tested yet.
-  Compare it with the live item using `pack-list --compare` before the first real upload.
+- The Python VPK writer (single-file and multi-part VPK v2) is verified by reading its output
+  back with CRC and MD5 validation. The game loading a pack written by it has not been tested
+  yet. Prove it with a small private test item before updating a live pack.
+- `pack-list --verify` checks MD5 sections the way this tool writes them. Valve-written packs
+  always list and compare correctly, but if their archive MD5 layout differs, `--verify` may
+  report a mismatch that is not real corruption.
+- Batch compile mode and the `-filelist`-style flag it needs are unverified with the real compiler.
 - SteamCMD's output format is not a stable API. Error messages are recognised by known
   phrases, and anything unrecognised is reported with the raw output (`--verbose`).
 - On Windows, interactive SteamCMD sessions (`--interactive`, `login`) talk to the console
