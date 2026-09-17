@@ -247,7 +247,7 @@ class PackListTests(unittest.TestCase):
         self.assertEqual((diff["added"], diff["removed"], diff["changed"]), (["x/three.vjs_c"], ["x/two.vjs_c"], ["x/one.vjs_c"]))
 
 
-@unittest.skipIf(shutil.which("bash") is None, "bash not available")
+@unittest.skipIf(os.name == "nt" or shutil.which("bash") is None, "bash launcher is tested on POSIX")
 class LauncherTests(unittest.TestCase):
     def test_bash_launcher_from_other_directory(self):
         launcher = str(ROOT / "workshop").replace("\\", "/")
