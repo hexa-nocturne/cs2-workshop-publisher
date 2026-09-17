@@ -13,6 +13,12 @@ COMPILED = {".xml": ".vxml_c", ".css": ".vcss_c", ".js": ".vjs_c", ".wav": ".vsn
 
 
 def main():
+    if os.environ.get("FAKE_COMPILER_LINGER"):
+        # Imitate wineserver: a background process that keeps our stdout/stderr open.
+        import subprocess
+
+        subprocess.Popen([sys.executable, "-c", "import time; time.sleep(%s)" % os.environ["FAKE_COMPILER_LINGER"]],
+                         close_fds=False)
     if sys.argv[1] == "--filelist":
         listing, content, game = sys.argv[2:5]
         with open(listing, encoding="utf-8") as handle:

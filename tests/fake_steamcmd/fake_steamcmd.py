@@ -55,6 +55,14 @@ def main():
     out("Waiting for client config...OK")
     out("Waiting for user info...OK")
 
+    depot = re.search(r"^download_depot 730 (\d+)$", script, re.M)
+    if depot:
+        target = os.path.join(os.environ["FAKE_DEPOT_ROOT"], "app_730", "depot_" + depot.group(1))
+        os.makedirs(os.path.join(target, "game", "bin", "win64"), exist_ok=True)
+        open(os.path.join(target, "game", "bin", "win64", "resourcecompiler.exe"), "wb").close()
+        out('Depot download complete : "%s" (1 files, manifest 123)' % target)
+        return 0
+
     install = re.search(r'^force_install_dir "(.+)"$', script, re.M)
     if install and "app_update 730" in script:
         if os.environ.get("FAKE_CREATE_COMPILER") == "1":

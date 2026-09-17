@@ -207,6 +207,19 @@ run Windows programs, so the pipeline runs the compiler under Wine, fully script
 - `workshop tools install` has SteamCMD download the **Windows** build of CS2
   (`@sSteamCmdForcePlatformType windows`) into `$CS2_TOOLS_DIR`. It uses the same uploader
   login and needs no Windows machine. Run it again after CS2 updates.
+- `app_update` does not install the **optional Workshop Tools depot**, which contains
+  `resourcecompiler.exe`. Put its depot ID in the `cs2` step's `toolsDepots`, or pass
+  `--depot ID`. The tool fetches it with SteamCMD's `download_depot` and merges it into
+  `$CS2_TOOLS_DIR`. Look up the depot ID in the app 730 depot list (for example on SteamDB).
+  The uploader account must own the Workshop Tools DLC.
+
+  ```bash
+  ./workshop tools install --max-kbps 4000             # cap SteamCMD at ~0.5 MB/s
+  ./workshop tools install --depots-only --depot <ID>  # only (re)fetch the tools depot
+  ./workshop tools install --validate                  # re-check every installed file (slow)
+  ```
+
+  `--max-kbps` uses SteamCMD's `set_download_throttle` for that session only.
 - The build copies your source folder into `$CS2_TOOLS_DIR/content/csgo_addons/<addon>/`. It
   runs `wine resourcecompiler.exe -nop4 -i <file>` under `xvfb-run` for each resource that
   needs compiling, and collects the `*_c` outputs from `game/csgo_addons/<addon>/`.
@@ -345,6 +358,7 @@ error, not an empty string.
 | `referenceCheck` | `{"mode": "error"}` | `mode`, `ignore` globs, `panoramaAliases`, `baseVpks` |
 | `resources` | `nice 10`, `ioniceIdle true` | plus optional `memoryMax`, `cpuQuota` |
 | `timeoutSeconds` | `1800` | Per-call compile timeout |
+| `toolsDepots` | `[]` | Extra depot IDs of app 730 for `tools install` (the Workshop Tools depot) |
 | `prebuilt` | `[]` | Folders of already-compiled files packed as-is (compiled files win on conflicts) |
 | `vpkChunkMB` | `100` | Chunk size when `vpk` ends in `_dir.vpk` |
 | `jobs` | `1` | Parallel compiler processes |
@@ -361,7 +375,8 @@ error, not an empty string.
 ./workshop publish --yes [same options] [--no-save-id]
 ./workshop login                     interactive, once: cache the SteamCMD session
 ./workshop status                    item details from the Steam Web API
-./workshop tools install|setup-wine|check
+./workshop tools install [--max-kbps N] [--depot ID] [--depots-only] [--validate]
+./workshop tools setup-wine|check
 ./workshop pack-list [VPK] [--compare OTHER.vpk] [--verify]
 ./workshop pack-extract VPK DESTINATION [--overwrite]
 ```
@@ -438,7 +453,7 @@ handling Steam Guard, so it is intentionally not provided. Publish from the buil
 | `Workshop upload failed (Access Denied)` | The account doesn't own the item and isn't a contributor, hasn't accepted the Workshop legal agreement, or is a limited account. |
 | `Workshop upload failed (Limit Exceeded)` | The preview image is 1 MB or larger. |
 | `No subscription` | Add CS2 (free) to the uploader account. |
-| `resourcecompiler.exe not found` | `./workshop tools install`. If CS2 downloads but the compiler is missing, the account lacks the *Counter-Strike 2 Workshop Tools* DLC. |
+| `resourcecompiler.exe not found` | `./workshop tools install` with the Workshop Tools depot in `toolsDepots`. If the depot download is refused, the account lacks the *Counter-Strike 2 Workshop Tools* DLC. |
 | `Wine prefix … is not initialised` | `./workshop tools setup-wine` |
 | `… reference(s) point at files that are not in the addon or the base game` | Fix the path, add the missing file, or add an `ignore` pattern. |
 | `no … was produced` for a compiled file | Run with `--verbose` or read `build-cache/logs/compile-*.log` for the compiler's own error. |
@@ -452,8 +467,8 @@ handling Steam Guard, so it is intentionally not provided. Publish from the buil
   addon layout. The automated tests cover it with a stand-in compiler, not the real one. The
   first real run on the server is the actual test. If Valve's compiler needs different flags,
   change the `compile` template in `workshop.json`; no code changes are needed.
-- `tools install` assumes the resource compiler ships with CS2's Windows depots when the
-  account owns the Workshop Tools DLC. If it does not, the command says so explicitly.
+- The Workshop Tools depot ID is not built in; you provide it. Merging `download_depot`
+  output into the tools folder has only been tested against a simulated SteamCMD.
 - Map compiling is not supported.
 - The Python VPK writer (single-file and multi-part VPK v2) is verified by reading its output
   back with CRC and MD5 validation. The game loading a pack written by it has not been tested

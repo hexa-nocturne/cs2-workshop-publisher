@@ -231,6 +231,41 @@ class CliTests(unittest.TestCase):
         self.assertIn('login "file_uploader"', json.loads(record.read_text())["script"])
 
 
+class ToolsInstallTests(unittest.TestCase):
+    def test_depot_download_with_bandwidth_cap(self):
+        base = Path(tempfile.mkdtemp(prefix="tools install "))
+        tools = base / "cs2 windows"
+        config = base / "workshop.json"
+        config.write_text(json.dumps({
+            "appId": 730, "publishedFileId": "2000000001", "contentDirectory": "./build",
+            "build": {"steps": [{"cs2": {"addon": "my_addon", "vpk": "{content}/a.vpk", "tools": str(tools),
+                                         "toolsDepots": [1234]}}]},
+        }), encoding="utf-8")
+        env, record = fake_env(FAKE_DEPOT_ROOT=str(base / "steamcmd content"))
+        result = run_cli(["--json", "--config", config, "tools", "install", "--depots-only", "--max-kbps", "4000"],
+                         env=env)
+        self.assertEqual(result.returncode, 0, result.out + result.err)
+        self.assertTrue((tools / "game" / "bin" / "win64" / "resourcecompiler.exe").is_file())
+        script = json.loads(record.read_text())["script"]
+        self.assertIn("set_download_throttle 4000", script)
+        self.assertIn("download_depot 730 1234", script)
+        self.assertNotIn("app_update", script)
+        self.assertEqual(json.loads(result.out)["tools"]["depots"], [{"depot": 1234, "files": 1}])
+        self.assertFalse((base / "steamcmd content" / "app_730" / "depot_1234").exists())
+
+    def test_missing_compiler_explains_depot(self):
+        base = Path(tempfile.mkdtemp(prefix="tools install "))
+        config = base / "workshop.json"
+        config.write_text(json.dumps({
+            "appId": 730, "contentDirectory": "./build",
+            "build": {"steps": [{"cs2": {"addon": "my_addon", "vpk": "{content}/a.vpk", "tools": str(base / "t")}}]},
+        }), encoding="utf-8")
+        env, _ = fake_env()
+        result = run_cli(["--config", config, "tools", "install"], env=env)
+        self.assertEqual(result.returncode, 3, result.out)
+        self.assertIn("toolsDepots", result.out)
+
+
 class UnexpectedErrorTests(unittest.TestCase):
     def test_json_output_survives_unexpected_exceptions(self):
         import contextlib

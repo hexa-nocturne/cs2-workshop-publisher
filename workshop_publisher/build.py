@@ -31,7 +31,9 @@ STEP_TYPES = ("run", "copy", "clean", "cs2")
 
 
 class BuildError(Exception):
-    pass
+    def __init__(self, message, **data):
+        super().__init__(message)
+        self.data = data
 
 
 class BuildStep:
@@ -167,7 +169,7 @@ def run_build(cfg, console, env=None, os_name=None, clean=False):
             try:
                 result.update(cs2.build(step.spec, cfg, console, env, clean=clean))
             except cs2.Cs2Error as exc:
-                raise BuildError(str(exc))
+                raise BuildError(str(exc), **exc.data)
         results.append(result)
     return results
 

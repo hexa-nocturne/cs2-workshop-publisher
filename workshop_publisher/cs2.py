@@ -39,7 +39,39 @@ SOURCE_SKIP = {".git", ".svn", ".DS_Store", "Thumbs.db", "desktop.ini"}
 
 
 class Cs2Error(Exception):
-    pass
+    def __init__(self, message, **data):
+        super().__init__(message)
+        self.data = data
+
+
+def run_to_file(argv, env, cwd=None, timeout=None):
+    """Run a command with stdout/stderr sent to a temporary file and return (code, output).
+
+    Wine starts a background wineserver that inherits the child's output handles.
+    With a pipe, reading until end-of-file would wait for that server to exit
+    (minutes), not for the compiler. A regular file has no such end-of-file wait,
+    so only the compiler process itself is awaited.
+    """
+    import tempfile
+
+    with tempfile.TemporaryFile() as out:
+        try:
+            code = subprocess.run(argv, env=env, cwd=cwd, stdin=subprocess.DEVNULL, stdout=out,
+                                  stderr=subprocess.STDOUT, timeout=timeout).returncode
+        except subprocess.TimeoutExpired:
+            code = None
+        out.seek(0)
+        return code, out.read().decode("utf-8", "replace")
+
+
+def start_wineserver(settings, paths, env):
+    """Start a persistent, fully detached wineserver so compiler runs start fast."""
+    wineserver = shutil.which("wineserver")
+    if not wineserver:
+        return
+    subprocess.Popen([wineserver, "-p", "300"], env=wine_environment(settings, paths, env),
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     start_new_session=True)
 
 
 def _opt_list(spec, key, default, where):
@@ -53,7 +85,7 @@ class Cs2Settings:
     KNOWN = {
         "addon", "source", "tools", "vpk", "runtime", "wine", "compile", "rootExtensions", "extraRoots",
         "packExclude", "referenceCheck", "resources", "cacheDirectory", "timeoutSeconds",
-        "prebuilt", "vpkChunkMB", "jobs", "compileMode", "compileBatch", "batchSize",
+        "prebuilt", "vpkChunkMB", "jobs", "compileMode", "compileBatch", "batchSize", "toolsDepots",
     }
 
     def __init__(self, spec, where="cs2"):
@@ -120,6 +152,10 @@ class Cs2Settings:
         if self.compile_mode == "batch" and "{filelist}" not in " ".join(self.compile_batch):
             raise ValueError("%s: batch mode needs a 'compileBatch' command containing {filelist}" % where)
         self.batch_size = int(spec.get("batchSize", 200))
+        depots = spec.get("toolsDepots", [])
+        if not isinstance(depots, list) or not all(isinstance(d, int) and not isinstance(d, bool) and d > 0 for d in depots):
+            raise ValueError("%s: 'toolsDepots' must be a list of numeric depot IDs" % where)
+        self.tools_depots = depots
 
 
 class Cs2Paths:
@@ -356,14 +392,14 @@ def init_wine_prefix(settings, paths, env, console):
         argv = [shutil.which("xvfb-run"), "-a"] + argv
     console.debug("initialising Wine prefix: %s" % " ".join(argv))
     try:
-        completed = subprocess.run(argv, env=wenv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=600)
-    except (OSError, subprocess.TimeoutExpired) as exc:
+        code, output = run_to_file(argv, wenv, timeout=600)
+    except OSError as exc:
         raise Cs2Error("could not initialise the Wine prefix: %s" % exc)
-    console.debug(completed.stdout.decode("utf-8", "replace"))
-    if completed.returncode != 0:
-        raise Cs2Error("wineboot failed with exit code %d (re-run with --verbose)" % completed.returncode)
-    # Keep one wineserver alive between compiler invocations.
-    subprocess.run([shutil.which("wineserver") or "wineserver", "-w"], env=wenv, timeout=600)
+    console.debug(output)
+    if code is None:
+        raise Cs2Error("wineboot did not finish within 10 minutes")
+    if code != 0:
+        raise Cs2Error("wineboot failed with exit code %d (re-run with --verbose)" % code)
 
 
 # ---------------------------------------------------------------------------
@@ -398,14 +434,9 @@ def _run_compiler(settings, paths, env, label, console, log, template_values, te
     run_env = wine_environment(settings, paths, env) if use_wine(settings) else env
     console.debug("compile: %s" % subprocess.list2cmdline(argv))
     try:
-        completed = subprocess.run(
-            argv, env=run_env, cwd=str(paths.compiler.parent), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            timeout=settings.timeout,
-        )
-        code = completed.returncode
-        output = completed.stdout.decode("utf-8", "replace")
-    except subprocess.TimeoutExpired:
-        code, output = -1, "timed out after %d seconds" % settings.timeout
+        code, output = run_to_file(argv, run_env, cwd=str(paths.compiler.parent), timeout=settings.timeout)
+        if code is None:
+            code, output = -1, output + "\ntimed out after %d seconds" % settings.timeout
     except OSError as exc:
         raise Cs2Error("could not start the compiler: %s" % exc)
     errors = [line.strip() for line in output.splitlines()
@@ -505,7 +536,12 @@ def build(settings, cfg, console, env=None, clean=False):
             console.line("  ... and %d more" % (len(missing) - 50))
         message = "%d reference(s) point at files that are not in the addon or the base game" % len(missing)
         if settings.reference_mode == "error":
-            raise Cs2Error(message + " (set build step referenceCheck.mode to 'warn' or add 'ignore' patterns if intended)")
+            sample = "; ".join("%s:%d %s" % (m.source, m.line, m.text) for m in missing[:5])
+            raise Cs2Error(
+                "%s: %s%s (fix the paths, or use referenceCheck.ignore / mode 'warn')"
+                % (message, sample, " ..." if len(missing) > 5 else ""),
+                missingReferences=[m.to_dict() for m in missing],
+            )
         console.warn(message)
 
     digests = {rel: file_digest(path) for rel, path in files.items()}
@@ -535,10 +571,7 @@ def build(settings, cfg, console, env=None, clean=False):
         log_path = paths.logs / ("compile-%s.log" % time.strftime("%Y%m%d-%H%M%S"))
         result["compileLog"] = str(log_path)
         if use_wine(settings):
-            subprocess.run(
-                [shutil.which("wineserver") or "wineserver", "-p", "300"],
-                env=wine_environment(settings, paths, env),
-            )
+            start_wineserver(settings, paths, env)
         with open(str(log_path), "w", encoding="utf-8") as log:
             failures = _compile_all(settings, paths, env, roots, console, log)
         if failures:
@@ -617,3 +650,25 @@ def collect_prebuilt(paths):
             for rel, full in scan_source(folder).items():
                 pack[rel.lower()] = full
     return pack
+
+
+def merge_directory(source, destination):
+    """Move every file from ``source`` into ``destination`` (overwriting), then remove ``source``.
+
+    Moving instead of copying avoids needing the depot's disk space twice.
+    Returns the number of files merged.
+    """
+    source, destination = Path(source), Path(destination)
+    count = 0
+    for dirpath, _, filenames in os.walk(str(source)):
+        rel = Path(dirpath).relative_to(source)
+        for name in filenames:
+            target = destination / rel / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                os.replace(os.path.join(dirpath, name), str(target))
+            except OSError:
+                shutil.copy2(os.path.join(dirpath, name), str(target))
+            count += 1
+    shutil.rmtree(str(source), ignore_errors=True)
+    return count

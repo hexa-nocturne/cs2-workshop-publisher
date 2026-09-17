@@ -49,16 +49,30 @@ def _norm(path):
     return posixpath.normpath(path).lstrip("/").lower()
 
 
+# Compiled resource type -> source extensions it is compiled from.
+COMPILED_SOURCES = {
+    ".vxml": (".xml",),
+    ".vcss": (".css",),
+    ".vjs": (".js",),
+    ".vts": (".ts",),
+    ".vsnd": (".wav", ".mp3"),
+}
+
+
 def _variants(path):
     """Source candidates and compiled names for a normalised resource path."""
+    if path.endswith("_c") and "." in posixpath.basename(path):
+        # "s2r://panorama/styles/x.vcss_c" names the compiled file; resolve it like "x.vcss".
+        return _variants(path[:-2])
     stem, ext = posixpath.splitext(path)
     ext = ext.lower()
+    if ext in COMPILED_SOURCES and not COMPILED_IMAGE_RE.match(path):
+        sources = [stem + source_ext for source_ext in COMPILED_SOURCES[ext]] + [path]
+        return sources, [path + "_c"]
     compiled_image = COMPILED_IMAGE_RE.match(path)
     if compiled_image:
         base = "%s.%s" % (compiled_image.group("stem"), compiled_image.group("ext"))
         return [base], [path + "_c"]
-    if ext == ".vsnd":
-        return [stem + ".wav", stem + ".mp3", stem + ".vsnd"], [path + "_c"]
     if ext in IMAGE_EXTS:
         tag = ext[1:]
         return [path], ["%s_%s.vtex_c" % (stem, tag), "%s_%s.vsvg_c" % (stem, tag)]
@@ -67,8 +81,6 @@ def _variants(path):
     compiled_ext = {".xml": ".vxml_c", ".css": ".vcss_c", ".js": ".vjs_c"}.get(ext)
     if compiled_ext:
         return [path], [stem + compiled_ext]
-    if ext.endswith("_c"):
-        return [path[:-2]], [path]
     return [path], [path + "_c"]
 
 
@@ -124,7 +136,8 @@ def find_missing(refs, source_files, base_files=None, ignore=()):
             continue
         if any(c in base for c in ref.compiled):
             continue
-        if any(fnmatch.fnmatch(ref.candidates[0], pat.lower()) for pat in ignore):
+        forms = list(ref.candidates) + list(ref.compiled) + [ref.text.lower()]
+        if any(fnmatch.fnmatch(form, pat.lower()) for pat in ignore for form in forms):
             continue
         missing.append(ref)
     return missing

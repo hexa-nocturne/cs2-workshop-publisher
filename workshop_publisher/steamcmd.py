@@ -496,8 +496,13 @@ APP_STATE_HINTS = {
 }
 
 
+def throttle_commands(max_kbps):
+    """SteamCMD's download limit for this session, in kilobits per second (not persisted)."""
+    return ["set_download_throttle %d" % int(max_kbps)] if max_kbps else []
+
+
 def install_app(steamcmd_path, credentials, app_id, install_dir, console, redactor,
-                platform_type="windows", interactive=False, show_output=False):
+                platform_type="windows", interactive=False, show_output=False, max_kbps=None, validate=False):
     """Download/update an app (e.g. the Windows build of CS2 for its compiler) with SteamCMD."""
     pre_login = [
         "@sSteamCmdForcePlatformType %s" % platform_type,
@@ -506,7 +511,7 @@ def install_app(steamcmd_path, credentials, app_id, install_dir, console, redact
     script = build_runscript(
         credentials,
         non_interactive=not interactive,
-        extra_commands=["app_update %d validate" % int(app_id)],
+        extra_commands=throttle_commands(max_kbps) + ["app_update %d%s" % (int(app_id), " validate" if validate else "")],
         pre_login=pre_login,
     )
     exit_code, output, blocked = run_steamcmd(
@@ -523,3 +528,35 @@ def install_app(steamcmd_path, credentials, app_id, install_dir, console, redact
         result.outcome = Outcome.FAILED
         result.message = "SteamCMD did not confirm the app installation. Re-run with --verbose."
     return result
+
+
+DEPOT_DONE_RE = re.compile(r'Depot download complete\s*:\s*"(?P<path>[^"]+)"', re.I)
+
+
+def download_depot(steamcmd_path, credentials, app_id, depot_id, console, redactor,
+                   platform_type="windows", interactive=False, show_output=False, max_kbps=None):
+    """Download one depot with SteamCMD's download_depot. Returns (result, download_directory)."""
+    script = build_runscript(
+        credentials,
+        non_interactive=not interactive,
+        extra_commands=throttle_commands(max_kbps) + ["download_depot %d %d" % (int(app_id), int(depot_id))],
+        pre_login=["@sSteamCmdForcePlatformType %s" % platform_type],
+    )
+    exit_code, output, blocked = run_steamcmd(
+        steamcmd_path, script, console, redactor, interactive=interactive, show_output=show_output
+    )
+    match = DEPOT_DONE_RE.search(output)
+    if match and not blocked:
+        return SteamCmdResult(Outcome.SUCCESS, "Depot %d downloaded." % int(depot_id), exit_code, output), match.group("path")
+    result = analyze_output(output, exit_code, blocked)
+    if re.search(r"Unknown command", output, re.I):
+        result.outcome = Outcome.FAILED
+        result.message = "SteamCMD rejected a command (see --verbose); this SteamCMD may not support it."
+    elif re.search(r"Depot download failed|Invalid depot|No subscription|Access Denied", output, re.I):
+        result.outcome = Outcome.LICENSE
+        result.message = ("Depot %d could not be downloaded. Check the depot ID and that the account owns the "
+                          "content it belongs to (e.g. the Workshop Tools DLC)." % int(depot_id))
+    elif result.outcome in (Outcome.SUCCESS, Outcome.UNCERTAIN):
+        result.outcome = Outcome.FAILED
+        result.message = "SteamCMD did not confirm the depot download. Re-run with --verbose."
+    return result, None

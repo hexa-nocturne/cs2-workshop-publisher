@@ -4,6 +4,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -161,6 +162,29 @@ class Cs2PipelineTests(unittest.TestCase):
         result, _ = self.build()
         self.assertEqual(result["fileCount"], 1)
         self.assertFalse((blocker.parent / "cs2").exists())
+
+    def test_background_process_holding_output_does_not_block(self):
+        self.env["FAKE_COMPILER_LINGER"] = "25"
+        started = time.time()
+        result, compiled = self.build()
+        self.assertEqual(len(compiled), 3)
+        self.assertLess(time.time() - started, 15, "build waited for a lingering background process")
+
+    def test_compiled_include_path_resolves_to_css_source(self):
+        self.write(self.project / "content/panorama/layout/ranks.xml",
+                   '<include src="s2r://panorama/styles/ranks.vcss_c" />')
+        result, _ = self.build()
+        self.assertEqual(result["missingReferences"], [])
+
+    def test_missing_reference_error_names_the_file(self):
+        self.write(self.project / "content/panorama/layout/ranks.xml",
+                   '<include src="s2r://panorama/styles/gone.vcss_c" />')
+        with self.assertRaises(BuildError) as ctx:
+            self.build()
+        self.assertIn("panorama/layout/ranks.xml:1", str(ctx.exception))
+        self.assertEqual(ctx.exception.data["missingReferences"][0]["file"], "panorama/layout/ranks.xml")
+        self.step(referenceCheck={"mode": "error", "ignore": ["s2r://panorama/styles/gone.vcss_c"]})
+        self.build()
 
     def test_prebuilt_satisfies_references(self):
         self.write(self.project / "content/panorama/layout/ranks.xml", '<Image src="file://{images}/agents/icon.png" />')

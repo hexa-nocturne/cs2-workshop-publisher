@@ -246,7 +246,7 @@ def do_build(ctx, cfg):
     try:
         steps = run_build(cfg, ctx.console, ctx.env, clean=getattr(ctx.args, "clean", False))
     except BuildError as exc:
-        raise CommandError("build failed: %s" % exc, EXIT_BUILD)
+        raise CommandError("build failed: %s" % exc, EXIT_BUILD, **exc.data)
     ctx.result["build"] = {"steps": steps, "seconds": round(time.time() - started, 1)}
     return EXIT_OK
 
@@ -494,21 +494,37 @@ def cmd_tools(ctx):
             console.warn("only %.0f GB free in %s; the Windows CS2 install needs roughly 60 GB" % (free / 1024 ** 3, paths.tools))
         steamcmd_path = require_steamcmd(ctx)
         creds = require_credentials(ctx, cfg)
-        console.info("Downloading/updating the Windows build of CS2 (app 730) into %s" % paths.tools)
-        console.info("This is a large download on the first run; later runs only fetch changes.")
-        result = steamcmd.install_app(
-            steamcmd_path, creds, 730, str(paths.tools), console, ctx.redactor,
-            platform_type="windows", interactive=ctx.args.interactive, show_output=ctx.args.verbose,
-        )
-        ctx.result["steamcmd"] = {"outcome": result.outcome, "exitCode": result.exit_code}
-        if not result.ok:
-            raise CommandError(result.message, OUTCOME_EXIT.get(result.outcome, EXIT_ENVIRONMENT))
-        console.ok(result.message)
+        args = ctx.args
+        depots = list(dict.fromkeys(list(settings.tools_depots) + list(args.depot or [])))
+        common_opts = dict(platform_type="windows", interactive=args.interactive, show_output=args.verbose,
+                           max_kbps=args.max_kbps)
+        if args.max_kbps:
+            console.info("Download speed limited to %d kbit/s (~%.1f MB/s)" % (args.max_kbps, args.max_kbps / 8000.0))
+        if not args.depots_only:
+            console.info("Downloading/updating the Windows build of CS2 (app 730) into %s" % paths.tools)
+            console.info("This is a large download on the first run; later runs only fetch changes.")
+            result = steamcmd.install_app(steamcmd_path, creds, 730, str(paths.tools), console, ctx.redactor,
+                                          validate=args.validate, **common_opts)
+            ctx.result["steamcmd"] = {"outcome": result.outcome, "exitCode": result.exit_code}
+            if not result.ok:
+                raise CommandError(result.message, OUTCOME_EXIT.get(result.outcome, EXIT_ENVIRONMENT))
+            console.ok(result.message)
+        ctx.result["tools"]["depots"] = []
+        for depot in depots:
+            console.info("Downloading optional depot %d..." % depot)
+            result, download_dir = steamcmd.download_depot(steamcmd_path, creds, 730, depot, console, ctx.redactor,
+                                                           **common_opts)
+            if not result.ok:
+                raise CommandError(result.message, OUTCOME_EXIT.get(result.outcome, EXIT_ENVIRONMENT))
+            merged = cs2.merge_directory(download_dir, paths.tools)
+            ctx.result["tools"]["depots"].append({"depot": depot, "files": merged})
+            console.ok("Depot %d: merged %d file(s) into %s" % (depot, merged, paths.tools))
         if not paths.compiler.is_file():
             raise CommandError(
-                "CS2 was downloaded but %s is missing. The resource compiler ships with the "
-                "\"Counter-Strike 2 Workshop Tools\" DLC; make sure the uploader account owns it "
-                "(it is free on the CS2 store page), then run this command again." % paths.compiler,
+                "%s is missing. The resource compiler comes from the optional Workshop Tools depot of app 730, "
+                "which SteamCMD does not install with app_update. Add its depot ID to the cs2 step's "
+                "\"toolsDepots\" (or pass --depot ID) and make sure the uploader account owns the "
+                "Workshop Tools DLC." % paths.compiler,
                 EXIT_ENVIRONMENT,
             )
         console.ok("resourcecompiler.exe is present.")
@@ -645,6 +661,12 @@ def build_parser():
     tools_sub = p.add_subparsers(dest="tools_command", metavar="<action>")
     t = tools_sub.add_parser("install", parents=[common], help="download/update the Windows CS2 build with SteamCMD")
     t.add_argument("--interactive", action="store_true", help="allow SteamCMD prompts")
+    t.add_argument("--max-kbps", type=int, metavar="KBPS",
+                   help="limit SteamCMD's download speed in kilobits per second (e.g. 4000 = 0.5 MB/s)")
+    t.add_argument("--depot", type=int, action="append", metavar="ID",
+                   help="also download this depot of app 730 and merge it into the tools folder (repeatable)")
+    t.add_argument("--depots-only", action="store_true", help="skip app_update and only fetch the depots")
+    t.add_argument("--validate", action="store_true", help="verify every installed file (slow for 60 GB)")
     tools_sub.add_parser("setup-wine", parents=[common], help="create the Wine prefix used by the compiler")
     tools_sub.add_parser("check", parents=[common], help="check that the compiler runtime is ready")
 

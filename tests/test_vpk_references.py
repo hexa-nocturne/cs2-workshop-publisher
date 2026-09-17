@@ -168,6 +168,23 @@ class ReferenceTests(unittest.TestCase):
                                           ignore=["materials/*", "panorama/images/icons/*"])
         self.assertEqual(ignored, [])
 
+    def test_compiled_names_resolve_to_sources(self):
+        refs = references.scan_sources({"panorama/layout/a.xml": "\n".join([
+            '<include src="s2r://panorama/styles/x.vcss_c" />',
+            '<include src="s2r://panorama/scripts/y.vjs_c" />',
+            '<include src="s2r://panorama/layout/z.vxml_c" />',
+            '<Image src="s2r://panorama/images/icon_png.vtex_c" />',
+            '<Image src="s2r://panorama/images/logo_png.vtex" />',
+        ])})
+        sources = ["panorama/styles/x.css", "panorama/scripts/y.js", "panorama/layout/z.xml",
+                   "panorama/images/icon.png", "panorama/images/logo.png"]
+        self.assertEqual(references.find_missing(refs, sources), [])
+        self.assertEqual(len(references.find_missing(refs, [])), 5)
+        # Ignore patterns may name the source, the compiled file or the reference text.
+        for pattern in ("panorama/styles/*.css", "*.vcss_c", "s2r://panorama/styles/*"):
+            missing = references.find_missing(refs[:1], [], ignore=[pattern])
+            self.assertEqual(missing, [], pattern)
+
     def test_dependents(self):
         refs = references.scan_sources({"panorama/layout/hud.xml": '<Image src="file://{images}/ranks/r.png"/>'})
         self.assertEqual(references.dependents(refs, ["panorama/images/ranks/r.png"]), {"panorama/layout/hud.xml"})
