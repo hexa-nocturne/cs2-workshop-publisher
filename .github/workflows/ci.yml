@@ -1,0 +1,68 @@
+name: CI
+
+# Validation only. This workflow never logs in to Steam and never uploads anything.
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: Linux (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Launcher is executable and uses LF line endings
+        run: |
+          test -x workshop || { echo "::error::workshop is not executable. Run: git update-index --chmod=+x workshop scripts/setup-ubuntu.sh"; exit 1; }
+          ! grep -q $'\r' workshop scripts/setup-ubuntu.sh
+
+      - name: ShellCheck
+        run: shellcheck workshop scripts/setup-ubuntu.sh tests/fake_steamcmd/steamcmd.sh
+
+      - name: Unit and integration tests (system Python)
+        run: python3 -m unittest discover -s tests -t . -v
+
+      - name: CLI smoke tests
+        run: |
+          ./workshop --help
+          ./workshop validate --config examples/demo/workshop.json
+          ./workshop update --dry-run --config examples/demo/workshop.json --change-note "CI dry run"
+          ./workshop --json update --dry-run --config examples/demo/workshop.json | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["ok"] and d["dryRun"], d'
+
+      - name: Doctor explains a missing SteamCMD
+        run: |
+          set +e
+          (cd /tmp && STEAMCMD_PATH= HOME=/tmp/empty-home "$GITHUB_WORKSPACE/workshop" doctor --config "$GITHUB_WORKSPACE/examples/demo/workshop.json") > doctor.txt 2>&1
+          code=$?
+          set -e
+          cat doctor.txt
+          test "$code" -ne 0
+          grep -q "SteamCMD was not found" doctor.txt
+
+  windows:
+    name: Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Unit and integration tests
+        run: python -m unittest discover -s tests -t . -v
+      - name: PowerShell and cmd launchers
+        shell: pwsh
+        run: |
+          .\workshop.ps1 --help
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          .\workshop.ps1 update --dry-run --config examples/demo/workshop.json --change-note "CI dry run"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          cmd /c "workshop.cmd validate --config examples\demo\workshop.json"
+          if ($LASTEXITCODE -ne 0) { exit 1 }

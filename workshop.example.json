@@ -1,0 +1,33 @@
+{
+  "$comment": "Copy to workshop.json (or keep it in your private content repo and pass --config). Paths are relative to this file.",
+  "appId": 730,
+  "publishedFileId": "",
+  "contentDirectory": "./build/workshop",
+  "previewImage": "./assets/preview.png",
+  "title": "My CS2 addon",
+  "description": "Custom content for my CS2 community server.",
+  "visibility": "private",
+  "build": {
+    "steps": [
+      {
+        "name": "Compile and pack CS2 addon",
+        "cs2": {
+          "addon": "my_addon",
+          "source": "./content",
+          "tools": "${CS2_TOOLS_DIR}",
+          "vpk": "{content}/{publishedFileId}.vpk",
+          "resources": {
+            "nice": 10,
+            "ioniceIdle": true,
+            "memoryMax": "6G",
+            "cpuQuota": "200%"
+          },
+          "referenceCheck": {
+            "mode": "error",
+            "ignore": []
+          }
+        }
+      }
+    ]
+  }
+}

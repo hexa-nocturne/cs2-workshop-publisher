@@ -1,0 +1,16 @@
+{
+  "$comment": "Self-contained example used by CI. It stages files with a copy step and needs no CS2 tools. Do not upload it.",
+  "appId": 730,
+  "publishedFileId": "1234567890",
+  "contentDirectory": "./build/workshop",
+  "previewImage": "./assets/preview.png",
+  "title": "Workshop publisher demo (example only)",
+  "description": "Example item used to test the publisher.\nIt contains \"quotes\" and a backslash \\ to exercise VDF escaping.",
+  "visibility": "private",
+  "build": {
+    "steps": [
+      { "name": "Clean staging directory", "clean": "{content}" },
+      { "name": "Stage content", "copy": { "from": "./content", "to": "{content}", "exclude": ["*.psd", "*.tmp"] } }
+    ]
+  }
+}

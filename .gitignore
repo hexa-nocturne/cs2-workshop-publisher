@@ -1,0 +1,32 @@
+# Secrets and credentials
+.env
+.env.*
+!.env.example
+steam_credentials*
+*.credentials
+ssfn*
+config.vdf
+
+# Project-specific configuration (keep yours in your own content repository)
+/workshop.json
+
+# Generated files
+workshop-upload.vdf
+*.log
+tmp/
+build/
+build-cache/
+dist/
+*.vpk
+.workshop-*.json.tmp
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

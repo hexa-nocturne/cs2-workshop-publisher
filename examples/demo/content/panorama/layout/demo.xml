@@ -1,0 +1,5 @@
+<root>
+  <Panel class="demo">
+    <Image src="file://{images}/icons/demo.png" />
+  </Panel>
+</root>

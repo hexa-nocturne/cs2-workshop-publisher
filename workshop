@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Launcher for the Steam Workshop publisher. Usage: ./workshop <command> [options]
+set -Eeuo pipefail
+
+# Resolve the real directory of this script (following symlinks) so the tool
+# works from any working directory and when symlinked into ~/bin.
+script_path="${BASH_SOURCE[0]}"
+while [ -L "$script_path" ]; do
+  link_dir="$(cd -P "$(dirname "$script_path")" && pwd)"
+  script_path="$(readlink "$script_path")"
+  case "$script_path" in
+    /*) ;;
+    *) script_path="$link_dir/$script_path" ;;
+  esac
+done
+script_dir="$(cd -P "$(dirname "$script_path")" && pwd)"
+
+find_python() {
+  local candidate
+  for candidate in "${WORKSHOP_PYTHON:-}" python3 python; do
+    [ -n "$candidate" ] || continue
+    command -v "$candidate" >/dev/null 2>&1 || continue
+    if "$candidate" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)' >/dev/null 2>&1; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+if ! python_bin="$(find_python)"; then
+  cat >&2 <<'MSG'
+Python 3.8 or newer is required but was not found.
+
+Install on Ubuntu/Debian:
+  sudo apt update
+  sudo apt install python3
+
+Or set WORKSHOP_PYTHON=/path/to/python3
+MSG
+  exit 3
+fi
+
+exec "$python_bin" "$script_dir/workshop.py" "$@"
