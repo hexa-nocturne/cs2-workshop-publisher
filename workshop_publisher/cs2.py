@@ -519,11 +519,15 @@ def build(settings, cfg, console, env=None, clean=False):
         if problems:
             raise Cs2Error("the CS2 compiler is not ready:\n  - " + "\n  - ".join(problems))
 
-    _mirror(files, digests, changed, deleted, paths, full, console)
-    if full and paths.addon_game.exists():
-        _ensure_under(paths.addon_game, paths.tools / "game" / "csgo_addons")
-        shutil.rmtree(str(paths.addon_game))
-    paths.addon_game.mkdir(parents=True, exist_ok=True)
+    if files:
+        try:
+            _mirror(files, digests, changed, deleted, paths, full, console)
+            if full and paths.addon_game.exists():
+                _ensure_under(paths.addon_game, paths.tools / "game" / "csgo_addons")
+                shutil.rmtree(str(paths.addon_game))
+            paths.addon_game.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise Cs2Error("cannot write to the CS2 tools directory %s: %s" % (paths.tools, exc))
 
     failures = []
     if roots:
@@ -548,7 +552,8 @@ def build(settings, cfg, console, env=None, clean=False):
 
     save_state(paths.state, {"version": STATE_VERSION, "fingerprint": fingerprint, "files": digests})
 
-    compiled_files = collect_pack_files(settings, paths)
+    # Without sources nothing is compiled, so stale output from earlier builds must not be packed.
+    compiled_files = collect_pack_files(settings, paths) if files else {}
     prebuilt_files = collect_prebuilt(paths)
     overridden = sorted(set(compiled_files) & set(prebuilt_files))
     pack_files = dict(prebuilt_files)

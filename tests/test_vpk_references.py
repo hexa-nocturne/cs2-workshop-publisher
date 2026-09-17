@@ -78,6 +78,29 @@ class VpkTests(unittest.TestCase):
             vpk.verify(out)
         self.assertIn("missing", str(ctx.exception))
 
+    def test_valve_flagged_hash_entries_are_not_verifiable_but_not_errors(self):
+        out = self.dir / "pak01_dir.vpk"
+        vpk.write(out, self.mapping, chunk_size=1024 * 1024)
+        directory = vpk.read_directory(out)
+        header = struct.unpack("<IIIIIII", directory.header)
+        start = directory.header_size + directory.tree_size + header[3]
+        blob = bytearray(out.read_bytes())
+        # Imitate Valve's newer format: flag 0x10000 on chunk numbers, non-MD5 hashes.
+        for offset in range(start, start + header[4], vpk.ARCHIVE_MD5_ENTRY.size):
+            index, begin, count, _ = vpk.ARCHIVE_MD5_ENTRY.unpack_from(blob, offset)
+            vpk.ARCHIVE_MD5_ENTRY.pack_into(blob, offset, index | 0x10000, begin, count, b"\x01" * 16)
+        out.write_bytes(bytes(blob))
+        notes = []
+        self.assertEqual(vpk.verify(out, notes), len(self.files))
+        self.assertTrue(any("BLAKE3" in note for note in notes))
+        # File data corruption is still detected through the CRCs.
+        chunk = self.dir / "pak01_000.vpk"
+        data = bytearray(chunk.read_bytes())
+        data[10] ^= 0xFF
+        chunk.write_bytes(bytes(data))
+        with self.assertRaises(vpk.VpkError):
+            vpk.verify(out, [])
+
     def test_corruption_detected(self):
         for name, chunk in (("addon.vpk", None), ("pak01_dir.vpk", 1024 * 1024)):
             out = self.dir / name

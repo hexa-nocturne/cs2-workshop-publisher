@@ -38,7 +38,8 @@ class SteamCmdDiscoveryTests(unittest.TestCase):
     def test_linux_common_locations(self):
         (self.home / "Steam").mkdir()
         (self.home / "Steam" / "steamcmd.sh").write_text("")
-        loc = platforms.find_steamcmd({}, "linux", self.home, which=no_which)
+        loc = platforms.find_steamcmd({}, "linux", self.home, which=no_which,
+                                      is_file=lambda p: str(p).startswith(str(self.home)) and p.is_file())
         self.assertEqual(loc.path, self.home / "Steam" / "steamcmd.sh")
 
     def test_path_lookup_wins(self):
@@ -48,7 +49,9 @@ class SteamCmdDiscoveryTests(unittest.TestCase):
         self.assertEqual(str(loc.path).replace("\\", "/"), "/usr/games/steamcmd")
 
     def test_not_found(self):
-        loc = platforms.find_steamcmd({}, "linux", self.home, which=no_which)
+        # Only look inside the fake home so a SteamCMD installed on the test machine is ignored.
+        loc = platforms.find_steamcmd({}, "linux", self.home, which=no_which,
+                                      is_file=lambda p: str(p).startswith(str(self.home)) and p.is_file())
         self.assertFalse(loc.found)
         self.assertIsNone(loc.error)
         self.assertIn("/usr/games/steamcmd", " ".join(loc.tried).replace("\\", "/"))

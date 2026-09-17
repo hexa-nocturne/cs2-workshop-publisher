@@ -546,8 +546,12 @@ def cmd_pack_list(ctx):
         data = manifest.from_vpk(target)
         if ctx.args.verify:
             ctx.console.info("Verifying checksums of %d files..." % data["fileCount"])
-            vpk.verify(target)
+            notes = []
+            vpk.verify(target, notes)
             data["verified"] = True
+            data["verifyNotes"] = notes
+            for note in notes:
+                ctx.console.warn(note)
     except (OSError, vpk.VpkError) as exc:
         raise CommandError("cannot read %s: %s" % (target, exc))
     ctx.result["pack"] = data
@@ -703,6 +707,15 @@ def main(argv=None):
         ctx.console.error("interrupted")
         ctx.result.update({"ok": False, "error": "interrupted"})
         code = 130
+    except Exception as exc:  # never end without a result, especially in --json mode
+        import traceback
+
+        message = "unexpected error: %s: %s" % (type(exc).__name__, exc)
+        ctx.console.error(message + ("" if args.verbose else " (re-run with --verbose for details)"))
+        if args.verbose:
+            ctx.console.write(traceback.format_exc())
+        ctx.result.update({"ok": False, "error": ctx.redactor.redact(message)})
+        code = EXIT_FAILURE
     ctx.result["exitCode"] = code
     if args.json:
         text = json.dumps(ctx.result, indent=2, default=str)

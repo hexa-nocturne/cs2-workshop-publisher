@@ -228,8 +228,21 @@ def _md5_file_range(path, start, length):
     return digest.digest()
 
 
-def verify(path):
-    """Verify every file's CRC and, for v2, the MD5 sections. Returns the file count."""
+ARCHIVE_INDEX_MASK = 0xFFFF
+ARCHIVE_HASH_FLAG = 0x10000
+
+
+def verify(path, notes=None):
+    """Verify a pack and return the number of files checked.
+
+    Every file's CRC32 is always checked. For VPK v2 the checksum sections are
+    checked as well when they use MD5 (as this tool writes them). Newer packs
+    written by Valve mark their chunk hash entries with flag 0x10000 in the chunk
+    number and use truncated BLAKE3, which the Python standard library cannot
+    compute; those sections are skipped and described in ``notes`` instead of
+    being reported as corruption.
+    """
+    notes = [] if notes is None else notes
     directory = read_directory(path)
     for entry in directory.entries.values():
         crc = 0
@@ -246,19 +259,35 @@ def verify(path):
         handle.seek(base)
         archive_section = handle.read(archive_md5_size)
         other = handle.read(other_md5_size)
+
+    entries = []
     if len(archive_section) % ARCHIVE_MD5_ENTRY.size == 0:
-        for offset in range(0, len(archive_section), ARCHIVE_MD5_ENTRY.size):
-            index, start, count, expected = ARCHIVE_MD5_ENTRY.unpack_from(archive_section, offset)
+        entries = [ARCHIVE_MD5_ENTRY.unpack_from(archive_section, offset)
+                   for offset in range(0, len(archive_section), ARCHIVE_MD5_ENTRY.size)]
+    else:
+        notes.append("archive hash section has an unexpected size; not verified")
+    flagged = any(index & ~ARCHIVE_INDEX_MASK for index, _, _, _ in entries)
+    if flagged:
+        notes.append("%d chunk hash entries use Valve's newer hash format (BLAKE3); not verifiable here, "
+                     "file CRCs were checked instead" % len(entries))
+    else:
+        for index, start, count, expected in entries:
             if _md5_file_range(directory.archive_path(index), start, count) != expected:
                 raise VpkError("MD5 mismatch in archive %d at offset %d of %s" % (index, start, path))
+
     if other_md5_size == 48:
-        tree_md5, archive_md5, whole_md5 = other[:16], other[16:32], other[32:48]
-        if _md5_file_range(directory.path, directory.header_size, directory.tree_size) != tree_md5:
-            raise VpkError("tree checksum mismatch in %s" % path)
-        if hashlib.md5(archive_section).digest() != archive_md5:
-            raise VpkError("archive MD5 section checksum mismatch in %s" % path)
-        if _md5_file_range(directory.path, 0, base + archive_md5_size + 32) != whole_md5:
-            raise VpkError("whole-file checksum mismatch in %s" % path)
+        checks = (
+            ("tree", _md5_file_range(directory.path, directory.header_size, directory.tree_size), other[:16]),
+            ("archive hash section", hashlib.md5(archive_section).digest(), other[16:32]),
+            ("whole-file", _md5_file_range(directory.path, 0, base + archive_md5_size + 32), other[32:48]),
+        )
+        for name, actual, expected in checks:
+            if actual == expected:
+                continue
+            if flagged:
+                notes.append("%s checksum does not match MD5; it may use Valve's newer hash format" % name)
+            else:
+                raise VpkError("%s checksum mismatch in %s" % (name, path))
     return len(directory.entries)
 
 

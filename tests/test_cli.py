@@ -231,6 +231,24 @@ class CliTests(unittest.TestCase):
         self.assertIn('login "file_uploader"', json.loads(record.read_text())["script"])
 
 
+class UnexpectedErrorTests(unittest.TestCase):
+    def test_json_output_survives_unexpected_exceptions(self):
+        import contextlib
+        import io
+        from unittest import mock
+
+        from workshop_publisher import cli
+
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with mock.patch.dict(cli.COMMANDS, {"validate": mock.Mock(side_effect=PermissionError("denied"))}), \
+                contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            code = cli.main(["--json", "validate"])
+        data = json.loads(stdout.getvalue())
+        self.assertEqual(code, 1)
+        self.assertFalse(data["ok"])
+        self.assertIn("PermissionError", data["error"])
+
+
 class PackListTests(unittest.TestCase):
     def test_compare(self):
         from workshop_publisher import vpk

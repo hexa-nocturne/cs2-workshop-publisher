@@ -458,9 +458,11 @@ handling Steam Guard, so it is intentionally not provided. Publish from the buil
 - The Python VPK writer (single-file and multi-part VPK v2) is verified by reading its output
   back with CRC and MD5 validation. The game loading a pack written by it has not been tested
   yet. Prove it with a small private test item before updating a live pack.
-- `pack-list --verify` checks MD5 sections the way this tool writes them. Valve-written packs
-  always list and compare correctly, but if their archive MD5 layout differs, `--verify` may
-  report a mismatch that is not real corruption.
+- `pack-list --verify` always checks every file's CRC32. Newer Valve-written packs hash their
+  chunks with truncated BLAKE3, which Python's standard library can't compute, so those
+  sections are reported as "not verifiable" instead of being checked.
+- Packs written by this tool have no signature block. Valve's own packs carry a 20-byte one.
+  Whether CS2 requires it for Workshop addons is untested.
 - Batch compile mode and the `-filelist`-style flag it needs are unverified with the real compiler.
 - SteamCMD's output format is not a stable API. Error messages are recognised by known
   phrases, and anything unrecognised is reported with the raw output (`--verbose`).

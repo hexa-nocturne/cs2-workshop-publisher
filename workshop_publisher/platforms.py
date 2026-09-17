@@ -75,11 +75,12 @@ class SteamCmdLocation:
         return self.path is not None
 
 
-def find_steamcmd(env=None, os_name=None, home=None, which=shutil.which):
+def find_steamcmd(env=None, os_name=None, home=None, which=shutil.which, is_file=None):
     env = os.environ if env is None else env
     os_name = os_name or current_os()
     home = home or Path.home()
     tried = []
+    is_file = is_file or (lambda candidate: candidate.is_file())
 
     explicit = env.get("STEAMCMD_PATH", "").strip()
     if explicit:
@@ -105,7 +106,7 @@ def find_steamcmd(env=None, os_name=None, home=None, which=shutil.which):
 
     for candidate in steamcmd_candidates(os_name, env, home):
         tried.append(str(candidate))
-        if candidate.is_file():
+        if is_file(candidate):
             return SteamCmdLocation(candidate, "auto-detected", tried)
     return SteamCmdLocation(None, None, tried)
 

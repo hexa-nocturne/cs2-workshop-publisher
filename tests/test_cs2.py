@@ -151,6 +151,17 @@ class Cs2PipelineTests(unittest.TestCase):
         self.assertEqual(compiled, [])
         self.assertEqual(result["fileCount"], 1)
 
+    def test_prebuilt_only_does_not_touch_unwritable_tools_path(self):
+        shutil.rmtree(str(self.project / "content"))
+        blocker = self.base / "not a directory"
+        blocker.write_text("file, so nothing can be created below it")
+        self.env["CS2_TOOLS_DIR"] = str(blocker / "cs2")
+        self.write(self.project / "prebuilt/materials/a.vmat_c", "A")
+        self.step(prebuilt=["./prebuilt"])
+        result, _ = self.build()
+        self.assertEqual(result["fileCount"], 1)
+        self.assertFalse((blocker.parent / "cs2").exists())
+
     def test_prebuilt_satisfies_references(self):
         self.write(self.project / "content/panorama/layout/ranks.xml", '<Image src="file://{images}/agents/icon.png" />')
         with self.assertRaises(BuildError):
