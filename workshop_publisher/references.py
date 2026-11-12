@@ -69,13 +69,20 @@ def _variants(path):
     if ext in COMPILED_SOURCES and not COMPILED_IMAGE_RE.match(path):
         sources = [stem + source_ext for source_ext in COMPILED_SOURCES[ext]] + [path]
         return sources, [path + "_c"]
+    if ext == ".vsvg" and not COMPILED_IMAGE_RE.match(path):
+        # "s2r://panorama/images/x.vsvg" is compiled from "x.svg" into "x.vsvg_c"
+        return [stem + ".svg"], [path + "_c"]
     compiled_image = COMPILED_IMAGE_RE.match(path)
     if compiled_image:
         base = "%s.%s" % (compiled_image.group("stem"), compiled_image.group("ext"))
         return [base], [path + "_c"]
     if ext in IMAGE_EXTS:
         tag = ext[1:]
-        return [path], ["%s_%s.vtex_c" % (stem, tag), "%s_%s.vsvg_c" % (stem, tag)]
+        compiled = ["%s_%s.vtex_c" % (stem, tag), "%s_%s.vsvg_c" % (stem, tag)]
+        if ext == ".svg":
+            # resourcecompiler writes Panorama SVGs as "<stem>.vsvg_c" (no "_svg" tag), referenced as "<stem>.vsvg"
+            compiled.insert(0, stem + ".vsvg_c")
+        return [path], compiled
     if ext in (".wav", ".mp3"):
         return [path], [stem + ".vsnd_c"]
     compiled_ext = {".xml": ".vxml_c", ".css": ".vcss_c", ".js": ".vjs_c"}.get(ext)

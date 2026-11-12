@@ -235,6 +235,16 @@ class Cs2UnitTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 cs2.Cs2Settings(bad)
 
+    def test_panorama_svg_names(self):
+        # resourcecompiler writes x.svg as x.vsvg_c, and Panorama CSS references it as x.vsvg
+        from workshop_publisher import references
+        self.assertIn("panorama/images/a/rank1.vsvg_c", cs2.expected_outputs("panorama/images/a/rank1.svg"))
+        sources, compiled = references._variants("panorama/images/a/rank1.vsvg")
+        self.assertEqual(sources, ["panorama/images/a/rank1.svg"])
+        self.assertEqual(compiled, ["panorama/images/a/rank1.vsvg_c"])
+        # the tagged form keeps working
+        self.assertEqual(references._variants("panorama/images/a/logo_png.vtex")[0], ["panorama/images/a/logo.png"])
+
     def test_wine_path(self):
         self.assertEqual(cs2.to_wine_path("/home/builder/cs2 tools/game"), "Z:\\home\\builder\\cs2 tools\\game")
 
